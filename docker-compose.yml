@@ -89,6 +89,10 @@ services:
     ports:
       - "1880:1880"
     volumes:
-      - ./data:/data
+      - ./NodeRed/data:/data
+    command: >
+      sh -c "cd /data
+      && npm install
+      && node-red"
     environment:
       - TZ=Europe/Rome

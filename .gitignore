@@ -1,2 +1,5 @@
 .env
 iot.env
+**/node_modules/
+NodeRed/data/node_modules/
+NodeRed/data/.npm/
