@@ -111,7 +111,9 @@ class CatalogService:
                 raise cherrypy.HTTPError(403, "Read-only")
             self._require_token()
             try:
-                raw = cherrypy.request.body.read().decode("utf-8")
+                # CherryPy 18.9 KnownLengthRFile.read acepta solo (size); usar fp.read() evita bug de 3 args
+                raw_bytes = cherrypy.request.body.fp.read() if cherrypy.request.body else b""
+                raw = raw_bytes.decode("utf-8") if raw_bytes else ""
                 payload = json.loads(raw) if raw else {}
                 self._replace_catalog(payload)
                 return self._json_response({"status": "updated", "lastUpdate": self._catalog["lastUpdate"]})
@@ -168,7 +170,8 @@ class CatalogService:
             raise cherrypy.HTTPError(403, "Read-only")
         self._require_token()
 
-        raw = cherrypy.request.body.read().decode("utf-8") if cherrypy.request.body else ""
+        raw_bytes = cherrypy.request.body.fp.read() if cherrypy.request.body else b""
+        raw = raw_bytes.decode("utf-8") if raw_bytes else ""
         payload = json.loads(raw) if raw else {}
 
         if method == "POST":

@@ -11,7 +11,8 @@ COPY common ./common
 COPY bridge_thingspeak/bridge.py .
 COPY bridge_thingspeak/settings.json .
 
-CMD ["python", "bridge.py"]
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "-u", "bridge.py"]
 
 
 

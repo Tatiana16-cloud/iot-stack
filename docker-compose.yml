@@ -69,8 +69,8 @@ services:
 
   reports-generator:
     build:
-      context: ./reportGenerator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: reportGenerator/Dockerfile
     container_name: reports-generator
     restart: unless-stopped
     ports:

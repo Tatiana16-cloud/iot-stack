@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any, Set, List
 
 import requests
 from paho.mqtt.client import Client as MqttClient, MQTTMessage
+from common.catalog_client import CatalogClient
 
 from telegram import (
     Update,
@@ -35,7 +36,7 @@ log = logging.getLogger("telegrambot")
 # ---------------- Settings ----------------
 @dataclass
 class BotSettings:
-    catalog_url: str        # base, e.g. http://catalog:9080
+    catalog_url: str        # e.g. http://catalog:9080/catalog (can include /catalog)
     broker_ip: str          # MQTT host
     broker_port: int        # 1883
     service_id: str         # TelegramBot
@@ -47,9 +48,7 @@ class BotSettings:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         si = data["serviceInfo"]
-        base = data["catalogURL"].rstrip("/")
-        if base.endswith("/catalog"):
-            base = base[: -len("/catalog")]
+        base = data["catalogURL"].rstrip("/")  # keep /catalog if present; client handles base stripping
         return cls(
             catalog_url=base,
             broker_ip=data["brokerIP"],
@@ -58,44 +57,6 @@ class BotSettings:
             telegram_token=si["telegram_token"],
             mqtt_subs=list(si.get("MQTT_sub", [])),
         )
-
-# ---------------- Catalog client ----------------
-class CatalogAPI:
-    def __init__(self, base_url: str, write_token: Optional[str] = None):
-        self.base = base_url.rstrip("/")
-        self.headers = {"Content-Type": "application/json"}
-        if write_token:
-            self.headers["X-Write-Token"] = write_token
-
-    def get_catalog(self) -> Dict[str, Any]:
-        r = requests.get(f"{self.base}/catalog", timeout=6)
-        r.raise_for_status()
-        return r.json()
-
-    def get_user(self, user_id: str) -> Dict[str, Any]:
-        r = requests.get(f"{self.base}/users/{user_id}", timeout=6)
-        if r.status_code == 404:
-            return {}
-        r.raise_for_status()
-        return r.json()
-
-    def patch_user(self, user_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
-        r = requests.patch(
-            f"{self.base}/users/{user_id}",
-            data=json.dumps(patch),
-            headers=self.headers,
-            timeout=8,
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def find_user_by_phone(self, phone: str) -> Optional[Dict[str, Any]]:
-        cat = self.get_catalog()
-        for u in cat.get("usersList", []):
-            info = u.get("user_information", {}) or {}
-            if str(info.get("phone", "")).strip() == phone.strip():
-                return u
-        return None
 
 # ---------------- Conversation states ----------------
 ASK_PHONE, MAIN_MENU, CFG_MENU, CFG_TIME_AWAKE, CFG_TIME_SLEEP, CFG_TEMP_LOW, CFG_TEMP_HIGH, CFG_HUM_LOW, CFG_HUM_HIGH = range(9)
@@ -133,7 +94,7 @@ class TelegramBotService:
     """
     def __init__(self, settings: BotSettings):
         self.S = settings
-        self.cat = CatalogAPI(self.S.catalog_url)
+        self.cat = CatalogClient(url=self.S.catalog_url)
         # chat_id -> user_id
         self.session_by_chat: Dict[int, str] = {}
         # user_id -> set(chat_id)
@@ -142,6 +103,17 @@ class TelegramBotService:
         self.tmp: Dict[int, Dict[str, Any]] = {}
         # PTB application (set in build_app)
         self.application = None  # type: ignore
+        # Best-effort: update service entry in Catalog (MQTT_sub/MQTT_pub/timestamp)
+        self.cat.upsert_service({
+            "serviceID": self.S.service_id,
+            "REST_endpoint": "",
+            "MQTT_sub": self.S.mqtt_subs,
+            "MQTT_pub": [],
+        })
+        # MQTT publisher for custom events
+        self.mqtt_pub = MqttClient(client_id=f"telegram-pub-{self.S.service_id}", clean_session=True)
+        self.mqtt_pub.connect(self.S.broker_ip, self.S.broker_port, keepalive=30)
+        self.mqtt_pub.loop_start()
 
     # ---- Telegram Handlers ----
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -199,7 +171,7 @@ class TelegramBotService:
                 await update.message.reply_text("⚠️ Session not verified. Use /start.")
                 return ASK_PHONE
             try:
-                user = self.cat.get_user(user_id)
+                user = self.cat.get_user(user_id) or {}
                 channel = user.get("thingspeak_info", {}).get("channel")
                 if not channel:
                     await update.message.reply_text("⚠️ No ThingSpeak channel in Catalog.")
@@ -255,11 +227,20 @@ class TelegramBotService:
         times["timesleep"] = s
 
         try:
-            user = self.cat.get_user(user_id)
+            user = self.cat.get_user(user_id) or {}
             info = user.get("user_information", {}) or {}
             info["timeawake"] = times.get("timeawake")
             info["timesleep"] = times.get("timesleep")
             self.cat.patch_user(user_id, {"user_information": info})
+            # Publish initTimeshift event
+            room_id = user.get("roomID") or "{Room}"
+            topic = f"SC/{user_id}/{room_id}/initTimeshift"
+            payload = {"timeawake": info.get("timeawake"), "timesleep": info.get("timesleep")}
+            try:
+                self.mqtt_pub.publish(topic, json.dumps(payload), qos=1, retain=False)
+                log.info("MQTT PUB initTimeshift %s -> %s", topic, payload)
+            except Exception:
+                log.exception("MQTT publish initTimeshift failed")
             await update.message.reply_text("✅ Times updated in Catalog.", reply_markup=CFG_KB)
         except Exception:
             log.exception("patch_user times")
@@ -313,7 +294,7 @@ class TelegramBotService:
             return ASK_PHONE
 
         try:
-            user = self.cat.get_user(user_id)
+            user = self.cat.get_user(user_id) or {}
             thr = user.get("threshold_parameters", {}) or {}
             thr.update({
                 "temp_low": vals["temp_low"],

@@ -1,27 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-TimeShift microservice
-
-- Lee del Catálogo las horas HH:MM por usuario: user_information.timesleep / timeawake.
-- Decide si ahora es "night" (ventana de sueño) o "day".
-- Transición a NIGHT (bedtime):
-    * Publica SC/{User}/{Room}/bedtime {"ts": epoch}           (evento efímero, retain=False)
-    * sampling -> true   (SC/{User}/{Room}/sampling)           (estado, retain=True)
-    * Cierra cortina     (SC/{User}/{Room}/servoV -> "0")      (estado, retain=True)
-    * Apaga LED (SenML)  (SC/{User}/{Room}/LedL ...)           (estado, retain=True)
-- Transición a DAY (wakeup):
-    * Publica SC/{User}/{Room}/wakeup {"seconds": <n>}         (evento efímero, retain=False)
-    * Decide LED según última luz (SC/{User}/{Room}/Light SenML {"v": raw}):
-        - raw < umbral ⇒ LED ON, si no OFF. Umbral=(pot_min+pot_max)/2 del catálogo.
-    * Abre cortina (servoV -> "90")                            (estado, retain=True)
-    * sampling -> false                                        (estado, retain=True)
-- Se suscribe a SC/+/+/Light para cachear última luz.
-
-Nota: normaliza siempre IDs a {User}/{Room} para coincidir con tus topics.
-"""
-
 import os
 import time
 import json
@@ -31,8 +7,8 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, Any, List, Optional
 from datetime import datetime
 
-import requests
 from paho.mqtt.client import Client as MqttClient, MQTTMessage
+from common.catalog_client import CatalogClient
 
 try:
     from zoneinfo import ZoneInfo
@@ -53,6 +29,8 @@ class TSSettings:
     broker_ip: str
     broker_port: int
     service_id: str
+    mqtt_pub: Dict[str, str]
+    mqtt_sub: Dict[str, str]
 
     loop_interval_sec: int = 10
     wake_alarm_seconds: int = 30
@@ -72,38 +50,13 @@ class TSSettings:
             broker_ip=data["brokerIP"],
             broker_port=int(data["brokerPort"]),
             service_id=si.get("serviceID", "TimeShift"),
+            mqtt_pub=dict(si.get("MQTT_pub", {})),
+            mqtt_sub=dict(si.get("MQTT_sub", {})),
             loop_interval_sec=int(data.get("loop_interval_sec", 10)),
             wake_alarm_seconds=int(data.get("wake_alarm_seconds", 30)),
             light_threshold_fallback=int(data.get("light_threshold_fallback", 2048)),
             timezone=data.get("timezone", "Europe/Rome"),
         )
-
-# --------------- Catalog client ---------------
-class CatalogClient:
-    def __init__(self, base_url: str):
-        self.base = base_url.rstrip("/")
-
-    def catalog(self) -> Dict[str, Any]:
-        r = requests.get(f"{self.base}/catalog", timeout=8)
-        r.raise_for_status()
-        return r.json()
-
-    def users(self) -> List[Dict[str, Any]]:
-        r = requests.get(f"{self.base}/users", timeout=8)
-        r.raise_for_status()
-        return r.json()
-
-    def rooms(self) -> List[Dict[str, Any]]:
-        r = requests.get(f"{self.base}/rooms", timeout=8)
-        r.raise_for_status()
-        return r.json()
-
-    def get_user(self, user_id: str) -> Dict[str, Any]:
-        r = requests.get(f"{self.base}/users/{user_id}", timeout=8)
-        if r.status_code == 404:
-            return {}
-        r.raise_for_status()
-        return r.json()
 
 # --------------- Helpers ---------------
 def parse_hhmm(s: str) -> Optional[int]:
@@ -145,6 +98,7 @@ class TimeShiftService:
 
         self.last_light: Dict[Tuple[str,str], int] = {}
         self.last_phase: Dict[Tuple[str,str], str] = {}
+        self.known_pairs: set[Tuple[str,str]] = set()
 
         self.light_min = 0
         self.light_max = self.S.light_threshold_fallback * 2  # ~4096
@@ -166,54 +120,26 @@ class TimeShiftService:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
+        # Best-effort: update service entry in Catalog
+        self._upsert_service()
+
     # ---------- Catalog ----------
     def _load_thresholds(self):
-        try:
-            cat = self.cat.catalog()
-            thr = cat.get("threshold_parameters", {}) or {}
-            self.light_min = int(thr.get("pot_min", 0))
-            self.light_max = int(thr.get("pot_max", 4095))
-            log.info("Thresholds pot_min=%s pot_max=%s", self.light_min, self.light_max)
-        except Exception:
-            log.exception("Error leyendo threshold_parameters del catálogo")
-            self.light_min = 0
-            self.light_max = 4095
+        """
+        Set global fallbacks for light thresholds (used if user thresholds are missing).
+        No catalog calls here. Defaults: 0..4095.
+        """
+        self.light_min = 0
+        self.light_max = 4095
+        log.info("Thresholds (fallback) pot_min=%s pot_max=%s", self.light_min, self.light_max)
 
     def _target_pairs(self) -> List[Tuple[str,str]]:
-        pairs: List[Tuple[str,str]] = []
-        try:
-            users = self.cat.users()
-            rooms = self.cat.rooms()
-
-            for r in rooms:
-                rid = r.get("roomID")
-                uid = r.get("userID") or r.get("owner")
-                if rid and uid:
-                    pairs.append((str(uid), str(rid)))
-
-            if not pairs:
-                for u in users:
-                    uid = u.get("userID")
-                    if not uid: continue
-                    for r in rooms:
-                        rid = r.get("roomID")
-                        if rid:
-                            pairs.append((str(uid), str(rid)))
-
-            out = []
-            seen = set()
-            for p in pairs:
-                if p not in seen:
-                    seen.add(p); out.append(p)
-            return out
-
-        except Exception:
-            log.exception("No se pudieron construir pares user/room desde catálogo")
-            return [("User1", "Room1")]
+        # No bulk fetch; use pairs discovered via incoming Light messages
+        return list(self.known_pairs)
 
     def _user_times(self, user_id: str) -> Tuple[Optional[int], Optional[int]]:
         try:
-            u = self.cat.get_user(user_id)
+            u = self.cat.get_user(user_id) or {}
             info = u.get("user_information", {}) or {}
             ts = parse_hhmm(info.get("timesleep"))
             ta = parse_hhmm(info.get("timeawake"))
@@ -233,10 +159,15 @@ class TimeShiftService:
         if rc != 0:
             log.error("MQTT connect rc=%s", rc); return
         try:
-            client.subscribe("SC/+/+/Light", qos=1)
-            log.info("SUB SC/+/+/Light")
+            topics = list(self.S.mqtt_sub.values()) if self.S.mqtt_sub else []
+            if not topics:
+                topics = ["SC/+/+/Light"]
+            for t in topics:
+                sub = self._normalize_sub(t)
+                client.subscribe(sub, qos=1)
+                log.info("SUB %s (from %s)", sub, t)
         except Exception:
-            log.exception("subscribe Light failed")
+            log.exception("subscribe topics failed")
 
     def on_message(self, client, userdata, msg: MQTTMessage):
         try:
@@ -245,9 +176,51 @@ class TimeShiftService:
             if len(parts) == 4 and parts[0] == "SC" and parts[3] == "Light":
                 user_raw, room_raw = parts[1], parts[2]
                 user, room = canon_id(user_raw), canon_id(room_raw)
+                log.info("[light] msg from user=%s room=%s topic=%s", user, room, topic)
+                # Register pair from topic
+                self.known_pairs.add((user, room))
+
+                # Best-effort: fetch user to get authoritative roomID, then fetch that room
+                try:
+                    u = self.cat.get_user(user_raw) or {}
+                    room_id = u.get("roomID")
+                    if room_id:
+                        room_canon = canon_id(room_id)
+                        self.known_pairs.add((canon_id(user_raw), room_canon))
+                        try:
+                            _ = self.cat.get_room(str(room_id))
+                        except Exception:
+                            pass
+                except Exception:
+                    log.exception("Error fetching user/room for light topic %s", topic)
+
                 raw = self._parse_light_senml(msg.payload.decode("utf-8","ignore"))
                 if raw is not None:
                     self.last_light[(user,room)] = raw
+                    log.info("[light] cached raw=%s for %s/%s", raw, user, room)
+            elif len(parts) == 4 and parts[0] == "SC" and parts[3] == "initTimeshift":
+                user_raw, room_raw = parts[1], parts[2]
+                user, room = canon_id(user_raw), canon_id(room_raw)
+                payload_txt = msg.payload.decode("utf-8","ignore")
+                log.info("[initTimeshift] msg user=%s room=%s topic=%s payload=%s", user, room, topic, payload_txt)
+                self.known_pairs.add((user, room))
+                # Best-effort: fetch user/room to ensure they exist
+                try:
+                    u = self.cat.get_user(user_raw) or {}
+                    room_id = u.get("roomID") or room_raw
+                    if room_id:
+                        self.cat.get_room(str(room_id))
+                        self.known_pairs.add((canon_id(user_raw), canon_id(room_id)))
+                    # Seed last_phase with current phase to avoid immediate false transitions
+                    phase, ts, ta = self.desired_phase(user_raw)
+                    key = (canon_id(user_raw), canon_id(room_id or room_raw))
+                    if phase is not None:
+                        self.last_phase[key] = phase
+                        log.info("[initTimeshift] registered pair user=%s room=%s phase=%s ts=%s ta=%s", key[0], key[1], phase, ts, ta)
+                    else:
+                        log.info("[initTimeshift] registered pair user=%s room=%s but missing times", key[0], key[1])
+                except Exception:
+                    log.exception("Error processing initTimeshift for %s/%s", user, room)
         except Exception:
             log.exception("on_message error")
 
@@ -279,33 +252,52 @@ class TimeShiftService:
             log.exception("Publish failed: %s", topic)
 
     # ---------- Publicadores ----------
+    @staticmethod
+    def _fmt_topic(template: str, user: str, room: str) -> str:
+        return (template
+                .replace("{User}", user)
+                .replace("{Room}", room))
+
+    @staticmethod
+    def _normalize_sub(template: str) -> str:
+        """Replace placeholders with wildcards for subscriptions."""
+        t = (template or "").replace("{User}", "+").replace("{Room}", "+")
+        while "//" in t:
+            t = t.replace("//", "/")
+        return t
+
     def pub_sampling(self, user: str, room: str, enable: bool):
         user, room = canon_id(user), canon_id(room)
-        topic = f"SC/{user}/{room}/sampling"
+        tpl = self.S.mqtt_pub.get("sampling", "SC/{User}/{Room}/sampling")
+        topic = self._fmt_topic(tpl, user, room)
         payload = json.dumps({"enable": bool(enable)})
         self._pub(topic, payload, qos=1, retain=True)   # ESTADO
 
     def pub_bedtime(self, user: str, room: str):
         user, room = canon_id(user), canon_id(room)
-        topic = f"SC/{user}/{room}/bedtime"
+        tpl = self.S.mqtt_pub.get("bedtime", "SC/{User}/{Room}/bedtime")
+        topic = self._fmt_topic(tpl, user, room)
         payload = json.dumps({"ts": int(time.time())})
         self._pub(topic, payload, qos=1, retain=False)  # EVENTO
 
     def pub_wakeup(self, user: str, room: str):
         user, room = canon_id(user), canon_id(room)
-        topic = f"SC/{user}/{room}/wakeup"
+        tpl = self.S.mqtt_pub.get("wakeup", "SC/{User}/{Room}/wakeup")
+        topic = self._fmt_topic(tpl, user, room)
         payload = json.dumps({"seconds": int(self.S.wake_alarm_seconds)})
         self._pub(topic, payload, qos=1, retain=False)  # EVENTO
 
     def pub_led_senml(self, user: str, room: str, on: bool):
         user, room = canon_id(user), canon_id(room)
-        topic = f"SC/{user}/{room}/LedL"
+        tpl = self.S.mqtt_pub.get("LedL", "SC/{User}/{Room}/LedL")
+        topic = self._fmt_topic(tpl, user, room)
         payload = senml_led_payload(on)
         self._pub(topic, payload, qos=1, retain=True)   # ESTADO
 
     def pub_servo(self, user: str, room: str, deg: int):
         user, room = canon_id(user), canon_id(room)
-        topic = f"SC/{user}/{room}/servoV"
+        tpl = self.S.mqtt_pub.get("servoV", "SC/{User}/{Room}/servoV")
+        topic = self._fmt_topic(tpl, user, room)
         payload = str(int(deg))  # "0" ó "90"
         self._pub(topic, payload, qos=1, retain=True)   # ESTADO
 
@@ -321,13 +313,20 @@ class TimeShiftService:
 
     def light_needs_led(self, user: str, room: str) -> bool:
         user, room = canon_id(user), canon_id(room)
+        # Per-user thresholds from catalog; fallback to global defaults
+        thr = self.cat.user_thresholds(user)
+        pot_min = thr.get("pot_min", self.light_min)
+        pot_max = thr.get("pot_max", self.light_max)
+        log.info("[thr] user=%s room=%s pot_min=%s pot_max=%s", user, room, pot_min, pot_max)
+
         raw = self.last_light.get((user, room))
         if raw is None:
             log.info("No light cached for %s/%s -> LED ON by default", user, room)
             return True
-        thr = (self.light_min + self.light_max) / 2.0
+        thr = (pot_min + pot_max) / 2.0
         need = raw < thr
-        log.info("Light %s/%s raw=%s thr=%.1f -> LED %s", user, room, raw, thr, "ON" if need else "OFF")
+        log.info("[decision] light %s/%s raw=%s thr=%.1f below=%s -> LED %s",
+                 user, room, raw, thr, raw < thr, "ON" if need else "OFF")
         return need
 
     def do_bedtime(self, user: str, room: str):
@@ -342,6 +341,19 @@ class TimeShiftService:
         self.pub_led_senml(user, room, led_on) # estado
         self.pub_servo(user, room, 90)         # estado
         self.pub_sampling(user, room, False)   # estado
+
+    def _upsert_service(self):
+        mqtt_sub_list = list(self.S.mqtt_sub.values()) if self.S.mqtt_sub else []
+        mqtt_pub_list = list(self.S.mqtt_pub.values()) if self.S.mqtt_pub else []
+        try:
+            self.cat.upsert_service({
+                "serviceID": self.S.service_id,
+                "REST_endpoint": "",
+                "MQTT_sub": mqtt_sub_list,
+                "MQTT_pub": mqtt_pub_list,
+            })
+        except Exception:
+            log.exception("Catalog upsert service failed")
 
     def run(self):
         self.connect_mqtt()

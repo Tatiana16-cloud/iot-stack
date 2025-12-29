@@ -9,76 +9,16 @@ import pandas as pd
 import numpy as np
 from dateutil import tz, parser as dateparser
 
+from common.catalog_client import CatalogClient
 
-# ============================ Utilidades de tiempo ============================
+
+# ============================ Time utilities ============================
 
 def now_rome() -> datetime:
     return datetime.now(tz.gettz("Europe/Rome"))
 
 
-# ============================= Catálogo / Usuarios ============================
-
-def update_catalog_last_updated(catalog_url: str, service_id: str, rest_endpoint: str) -> None:
-    """Notifica al catálogo que este servicio está vivo (best-effort)."""
-    try:
-        payload = {
-            "serviceID": service_id,
-            "REST_endpoint": rest_endpoint,
-            "last_updated": now_rome().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        requests.post(f"{catalog_url}/services/{service_id}", json=payload, timeout=5)
-    except requests.RequestException:
-        pass
-
-
-def _find_user_in_catalog_root(doc: Dict[str, Any], user_id: str) -> Optional[Dict[str, Any]]:
-    users = []
-    if isinstance(doc, dict):
-        users = doc.get("usersList") or []
-    if not users:
-        return None
-
-    wanted = {user_id, f"{{{user_id}}}"}  # soporta "User1" y "{User1}"
-    for u in users:
-        uid = u.get("userID")
-        uname = (u.get("user_information") or {}).get("userName")
-        if uid in wanted or uname == user_id:
-            return u
-    return None
-
-
-def get_user_from_catalog(catalog_url: str, user_id: str) -> Dict[str, Any]:
-    """
-    Soporta dos layouts: (A) /users/{id} devuelve el usuario;
-    (B) raíz (/ o /catalog o /api/catalog) con usersList[].
-    Acepta IDs con y sin llaves.
-    """
-    # 1) Intento directo
-    try:
-        r = requests.get(f"{catalog_url}/users/{user_id}", timeout=8)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, dict) and ("user_information" in data or "thingspeak_info" in data):
-                return data
-        elif r.status_code != 404:
-            r.raise_for_status()
-    except requests.RequestException:
-        pass
-
-    # 2) Fallbacks al documento principal
-    for suffix in ("", "/catalog", "/api/catalog"):
-        try:
-            r2 = requests.get(f"{catalog_url}{suffix}", timeout=8)
-            r2.raise_for_status()
-            doc = r2.json()
-            found = _find_user_in_catalog_root(doc, user_id)
-            if found:
-                return found
-        except requests.RequestException:
-            continue
-
-    raise cherrypy.HTTPError(404, f"User '{user_id}' not found in catalog")
-
+# ============================= Catalog / Users ============================
 
 def extract_times(user_obj: Dict[str, Any]) -> Dict[str, str]:
     ui = user_obj.get("user_information", {}) or {}
@@ -91,10 +31,7 @@ def extract_times(user_obj: Dict[str, Any]) -> Dict[str, str]:
 
 
 def extract_thingspeak(user_obj: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Devuelve channel y la lista de keys (posibles READ/WRITE) tal cual.
-    Probaremos todas como READ por si el orden varía.
-    """
+    """Return channel and keys (READ/WRITE candidates) as provided."""
     tsi = user_obj.get("thingspeak_info", {}) or {}
     channel = str(tsi.get("channel") or "").strip()
     apikeys = tsi.get("apikeys") or []
@@ -106,14 +43,10 @@ def extract_thingspeak(user_obj: Dict[str, Any]) -> Dict[str, Any]:
     return {"channel": channel, "keys": keys}
 
 
-# ============================== Ventana de sueño ==============================
+# ============================== Sleep window ==============================
 
 def window_for_date(timesleep: str, timeawake: str, ref_date_rome: datetime) -> Tuple[datetime, datetime]:
-    """
-    Devuelve la ventana [start, end) en Europe/Rome:
-    - timesleep < timeawake  -> misma fecha (ej. 16:00–17:00)
-    - timesleep >= timeawake -> cruza medianoche (ej. 22:00–07:00)
-    """
+    """Return [start, end) window in Europe/Rome, handling midnight crossing."""
     tz_rome = tz.gettz("Europe/Rome")
     today = ref_date_rome.astimezone(tz_rome).date()
     yesterday = today - timedelta(days=1)
@@ -137,9 +70,7 @@ def window_for_date(timesleep: str, timeawake: str, ref_date_rome: datetime) -> 
 # ================================ ThingSpeak ==================================
 
 def _normalize_ts_df(feeds: list) -> pd.DataFrame:
-    """
-    Convierte feeds de TS a DataFrame y normaliza created_at a Europe/Rome.
-    """
+    """Convert TS feeds to DataFrame and normalize created_at to Europe/Rome."""
     if not feeds:
         return pd.DataFrame(columns=["created_at"])
     df = pd.DataFrame(feeds)
@@ -152,12 +83,7 @@ def _normalize_ts_df(feeds: list) -> pd.DataFrame:
 
 def fetch_ts_robusto(base_url: str, channel_id: str, keys: List[str],
                      start_local: datetime, end_local: datetime) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """
-    Intenta varias combinaciones hasta obtener feeds:
-      A) timezone=Europe/Rome con cada key y sin key (si canal es público)
-      B) start/end en UTC (sin timezone) con cada key y sin key
-    Devuelve (df_normalizado, debug_info).
-    """
+    """Try several combos to fetch feeds; returns (normalized df, debug_info)."""
     def _do_req(params: dict) -> dict:
         url = f"{base_url}/channels/{channel_id}/feeds.json"
         r = requests.get(url, params=params, timeout=12)
@@ -224,7 +150,7 @@ def fetch_ts_robusto(base_url: str, channel_id: str, keys: List[str],
     return pd.DataFrame(columns=["created_at"]), debug
 
 
-# ============================== Métricas/estadísticos ==============================
+# ============================== Metrics/statistics ==============================
 
 def pick_fields(df: pd.DataFrame, bpm_field: str, temp_field: str,
                 hum_field: str, led_field: str) -> pd.DataFrame:
@@ -250,10 +176,10 @@ def basic_stats(series: pd.Series) -> Dict[str, Optional[float]]:
 
 
 def count_led_activations(led_series: pd.Series) -> int:
-    s = led_series.fillna(0).astype(int)
-    prev = s.shift(1).fillna(0).astype(int)
-    rises = ((prev != 1) & (s == 1)).sum()
-    return int(rises)
+    """Bridge sends an accumulated counter; activations = max value in window."""
+    if led_series.dropna().empty:
+        return 0
+    return int(led_series.max())
 
 
 def infer_sleep_stages_from_bpm(df: pd.DataFrame, bpm_field: str) -> Dict[str, Any]:
@@ -264,7 +190,7 @@ def infer_sleep_stages_from_bpm(df: pd.DataFrame, bpm_field: str) -> Dict[str, A
     if d.empty:
         return {"deep_h": 0.0, "light_h": 0.0, "rem_h": 0.0}
 
-    # Mediana móvil como baseline (ventana ~15 muestras)
+    # Rolling median as baseline (~15 samples)
     d["baseline"] = d[bpm_field].rolling(window=15, min_periods=1).median()
 
     def stage_label(row):
@@ -294,7 +220,8 @@ def infer_sleep_stages_from_bpm(df: pd.DataFrame, bpm_field: str) -> Dict[str, A
 def sleep_quality(temp_stats: Dict[str, Optional[float]],
                   hum_stats: Dict[str, Optional[float]],
                   bpm_stats: Dict[str, Optional[float]],
-                  led_count: int) -> Dict[str, Any]:
+                  alarm_count: int,
+                  duration_hours: float) -> Dict[str, Any]:
     # Temperatura ideal ~19°C
     t_mean = temp_stats.get("mean")
     if t_mean is None:
@@ -322,17 +249,20 @@ def sleep_quality(temp_stats: Dict[str, Optional[float]],
         span = min(max(0.0, b_max - b_min), 40.0)
         score_bpm = 100.0 * (1.0 - span / 40.0)
 
-    penalty = min(led_count * 5.0, 40.0)
+    # Penalize alerts by rate: alerts per hour. Bursts in short windows hurt more.
+    dh = max(duration_hours, 1e-3)
+    rate_per_hour = alarm_count / dh
+    penalty = min(rate_per_hour * 2, 40.0)
     score = max(0.0, min(100.0, 0.35 * score_temp + 0.25 * score_hum + 0.40 * score_bpm - penalty))
 
     if score >= 85:
-        label = "tu sueño fue casi perfecto"
+        label = "your sleep was almost perfect"
     elif score >= 70:
-        label = "dormiste bien"
+        label = "you slept well"
     elif score >= 50:
-        label = "dormiste regular"
+        label = "you slept okay"
     else:
-        label = "dormiste muy mal"
+        label = "you slept poorly"
 
     return {
         "score": round(score, 1),
@@ -346,53 +276,80 @@ def sleep_quality(temp_stats: Dict[str, Optional[float]],
     }
 
 
-# =============================== Servicio CherryPy ==============================
+# =============================== CherryPy Service ==============================
 
 class ReportsGenerator:
     exposed = True  # para MethodDispatcher
 
-    def __init__(self, catalog_url: str, reports_url: str, thingspeak_url: str,
-                 service_id: str = "ReportsGenerator", rest_endpoint: str = "http://reports_generator:8093"):
-        self.catalog_url = catalog_url
-        self.reports_url = reports_url
-        self.ts_base = thingspeak_url
-        self.service_id = service_id
-        self.rest_endpoint = rest_endpoint
+    def __init__(self, settings: Dict[str, Any]):
+        self.settings = settings
+        self.catalog_url = settings.get("catalogURL", "")
+        self.reports_url = settings.get("reportsURL", "")
+        self.ts_base = settings.get("thingspeakURL", "")
+        
+        svc = settings.get("serviceInfo", {})
+        self.service_id = svc.get("serviceID", "ReportsGenerator")
+        self.rest_endpoint = svc.get("REST_endpoint", "")
+        self.mqtt_sub = svc.get("MQTT_sub", [])
+        self.mqtt_pub = svc.get("MQTT_pub", [])
 
-        # Nombres de campos TS (pueden venir por env, defaults razonables)
-        self.f_bpm = os.environ.get("TS_BPM_FIELD", "field3")
-        self.f_temp = os.environ.get("TS_TEMP_FIELD", "field1")
-        self.f_hum  = os.environ.get("TS_HUM_FIELD",  "field2")
-        self.f_led  = os.environ.get("TS_LED_FIELD",  "field7")
+        # Catalog client
+        self.catalog = CatalogClient(self.catalog_url, ttl=5)
+        
+        # Upsert service
+        try:
+            self.catalog.upsert_service({
+                "serviceID": self.service_id,
+                "REST_endpoint": self.rest_endpoint,
+                "MQTT_sub": self.mqtt_sub,
+                "MQTT_pub": self.mqtt_pub,
+            })
+        except Exception as e:
+            print(f"[ReportsGenerator] WARN: cannot upsert service: {e}")
 
-        # Padding para la query a TS (se recorta después)
+        # TS field names from settings
+        fields = settings.get("fields", {})
+        self.f_bpm = fields.get("TS_BPM_FIELD", "field3")
+        self.f_temp = fields.get("TS_TEMP_FIELD", "field1")
+        self.f_hum  = fields.get("TS_HUM_FIELD",  "field2")
+        self.f_alarm = fields.get("TS_ALARM_FIELD", "field8") # Renamed from LED
+
+        # Padding for TS query (clipped later)
         self.pad_min = int(os.environ.get("TS_PAD_MIN", "5"))
 
     @cherrypy.tools.json_out()
     def GET(self, user_id: str = "User1", date: Optional[str] = None):
-        # Heartbeat al catálogo (best-effort)
-        update_catalog_last_updated(self.catalog_url, self.service_id, self.rest_endpoint)
+        # Heartbeat to catalog
+        try:
+            self.catalog.heartbeat_service(self.service_id)
+        except Exception:
+            pass
 
-        # Fecha de referencia (hoy en Roma o la indicada)
+        # Reference date (today Rome or provided)
         ref_date = now_rome().date() if not date else dateparser.parse(date).date()
         today_dt = datetime(ref_date.year, ref_date.month, ref_date.day, tzinfo=tz.gettz("Europe/Rome"))
 
-        # 1) Traer usuario del catálogo
-        user_obj = get_user_from_catalog(self.catalog_url, user_id)
+        # 1) Fetch user from catalog
+        try:
+            user_obj = self.catalog.get_user(user_id)
+            if not user_obj:
+                raise cherrypy.HTTPError(404, f"User '{user_id}' not found in catalog")
+        except Exception as e:
+             raise cherrypy.HTTPError(502, f"Catalog error: {e}")
 
-        # 2) Horas de dormir/despertar -> ventana local
+        # 2) Sleep/wake -> local window
         t = extract_times(user_obj)
         start_dt, end_dt = window_for_date(t["timesleep"], t["timeawake"], today_dt)
 
-        # 3) Credenciales TS desde catálogo (con override por env si existe)
+        # 3) TS credentials from catalog (per user)
         ts_info = extract_thingspeak(user_obj)
-        channel_id = ts_info.get("channel") or os.environ.get("THINGSPEAK_CHANNEL_ID", "")
+        channel_id = ts_info.get("channel")
         keys: List[str] = ts_info.get("keys") or []
-        env_key = os.environ.get("THINGSPEAK_READ_KEY", "").strip()
-        if env_key:
-            keys = [env_key] + [k for k in keys if k != env_key]
+        
+        if not channel_id:
+             raise cherrypy.HTTPError(400, f"User '{user_id}' has no ThingSpeak channel configured")
 
-        # 4) Fetch de ThingSpeak con padding y estrategia robusta
+        # 4) Fetch ThingSpeak with padding and robust strategy
         start_q = start_dt - timedelta(minutes=self.pad_min)
         end_q   = end_dt + timedelta(minutes=self.pad_min)
 
@@ -401,7 +358,7 @@ class ReportsGenerator:
         except requests.RequestException as e:
             raise cherrypy.HTTPError(502, f"ThingSpeak error: {e}")
 
-        # 5) Selección de campos y recorte final por ventana exacta
+        # 5) Field selection and final clip to exact window
         if df.empty:
             return {
                 "status": 200,
@@ -409,10 +366,10 @@ class ReportsGenerator:
                 "window": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
                 "message": "No data in the specified window",
                 "metrics": {},
-                "debug": dbg  # dejar mientras validas; quítalo si no quieres exponer
+                "debug": dbg
             }
 
-        df = pick_fields(df, self.f_bpm, self.f_temp, self.f_hum, self.f_led)
+        df = pick_fields(df, self.f_bpm, self.f_temp, self.f_hum, self.f_alarm)
         df = df[(df["created_at"] >= start_dt) & (df["created_at"] < end_dt)].copy()
 
         if df.empty:
@@ -425,18 +382,19 @@ class ReportsGenerator:
                 "debug": dbg
             }
 
-        # 6) Métricas
+        # 6) Metrics
         bpm_stats = basic_stats(df[self.f_bpm]) if self.f_bpm in df.columns else {"mean": None, "min": None, "max": None}
         temp_stats = basic_stats(df[self.f_temp]) if self.f_temp in df.columns else {"mean": None, "min": None, "max": None}
         hum_stats = basic_stats(df[self.f_hum]) if self.f_hum in df.columns else {"mean": None, "min": None, "max": None}
-        led_count = count_led_activations(df[self.f_led]) if self.f_led in df.columns else 0
+        alarm_count = count_led_activations(df[self.f_alarm]) if self.f_alarm in df.columns else 0
 
         bpm_data = df[self.f_bpm].dropna().tolist() if self.f_bpm in df.columns else []
         temp_data = df[self.f_temp].dropna().tolist() if self.f_temp in df.columns else []
         hum_data = df[self.f_hum].dropna().tolist() if self.f_hum in df.columns else []
 
         stages = infer_sleep_stages_from_bpm(df, self.f_bpm)
-        quality = sleep_quality(temp_stats, hum_stats, bpm_stats, led_count)
+        duration_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-3)
+        quality = sleep_quality(temp_stats, hum_stats, bpm_stats, alarm_count, duration_hours)
 
         return {
             "status": 200,
@@ -461,7 +419,7 @@ class ReportsGenerator:
                     "max": hum_stats.get("max"),
                     "data": hum_data
                 },
-                "led_activations": led_count
+                "alarm_activations": alarm_count
             },
             "stages_hours": stages,
             "sleep_quality": quality
@@ -473,27 +431,11 @@ if __name__ == "__main__":
     try:
         with open(settings_file_path, 'r') as f:
             settings = json.load(f)
-
-        catalog_url = settings.get("catalogURL")
-        reports_generator_url = settings.get("reportsURL")
-        thingspeak_url = settings.get("thingspeakURL")
-
-        service_info = settings.get("serviceInfo", {})
-        service_id = service_info.get("serviceID", "ReportsGenerator")
-        rest_endpoint = service_info.get("REST_endpoint", "http://reports_generator:8093")
-        MQTT_sub_topics = service_info.get("MQTT_sub", [])
-        MQTT_pub_topics = service_info.get("MQTT_pub", [])
     except Exception as e:
         print(f"Error reading settings: {e}")
         raise SystemExit(1)
 
-    web_service = ReportsGenerator(
-        catalog_url=catalog_url,
-        reports_url=reports_generator_url,
-        thingspeak_url=thingspeak_url,
-        service_id=service_id,
-        rest_endpoint=rest_endpoint
-    )
+    web_service = ReportsGenerator(settings)
 
     conf = {
         '/': {

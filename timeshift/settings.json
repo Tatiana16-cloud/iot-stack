@@ -10,16 +10,16 @@
     "serviceInfo": {
       "serviceID": "TimeShift",
       "MQTT_pub": {
-        "alert_timeshift": "SC/alerts/{User1}/{Room1}/timeshift",
-        "sampling": "SC/{User1}/{Room1}/sampling",
-        "bedtime": "SC/{User1}/{Room1}/bedtime",
-        "wakeup": "SC/{User1}/{Room1}/wakeup",
-        "down": "SC/{User1}/{Room1}/down",
-        "servoV": "SC/{User1}/{Room1}/servoV",
-        "LedL": "SC/{User1}/{Room1}/LedL"
+        "sampling": "SC/{User}/{Room}/sampling",
+        "bedtime": "SC/{User}/{Room}/bedtime",
+        "wakeup": "SC/{User}/{Room}/wakeup",
+        "down": "SC/{User}/{Room}/down",
+        "servoV": "SC/{User}/{Room}/servoV",
+        "LedL": "SC/{User}/{Room}/LedL"
       },
       "MQTT_sub": {
-        "Light": "SC/{User1}/{Room1}/Light"
+        "Light": "SC/{User}/{Room}/Light",
+        "InitTimeshift": "SC/{User}/{Room}/initTimeshift"
       }
     }
   }

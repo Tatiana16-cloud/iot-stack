@@ -17,15 +17,13 @@ class AlarmSettings:
         svc = data["serviceInfo"]
         self.service_id: str = svc["serviceID"]
         self.subscriptions: List[str] = list(svc["MQTT_sub"])
-        self.from_catalog: bool = bool(data.get("fromCatalog", True))
-        self.thresholds: Dict[str, Tuple[float, float]] = data["thresholds"]
         self.pub_alert_env: str = svc["MQTT_pub_alert_env"]
         self.pub_alert_hr:  str = svc["MQTT_pub_alert_hr"]
 
 
 
 class AlarmControl:
-    """Microservicio que evalúa HR, temperatura y humedad."""
+    """Microservice that evaluates HR, temperature, and humidity."""
 
     RE_SC = r"^SC/([^/]+)/([^/]+)/"
 
@@ -37,24 +35,35 @@ class AlarmControl:
             host=self.S.broker_ip,
             port=self.S.broker_port,
         )
+        # Best-effort: update service entry in Catalog (MQTT_sub/MQTT_pub/timestamp)
+        self.catalog.upsert_service({
+            "serviceID": self.S.service_id,
+            "REST_endpoint": "",
+            "MQTT_sub": self.S.subscriptions,
+            "MQTT_pub": [self.S.pub_alert_hr, self.S.pub_alert_env],
+        })
 
-    # ---------- Evaluación de reglas ----------
-    def _check_limits(self, var: str, value: float) -> Dict[str, Any] | None:
-        thr = self.S.thresholds.get(var)
-        if not thr or value is None:
-            return None
+    # ---------- Helpers ----------
+    @staticmethod
+    def _fmt_topic(template: str, user: str, room: str) -> str:
+        """Supports placeholders {User} and {Room}."""
+        return (template
+                .replace("{User}", user)
+                .replace("{Room}", room))
 
-        low, high = thr
-        if value < low or value > high:
-            return {
-                "variable": var,
-                "value": value,
-                "severity": "warning",
-                "message": f"{var} out of range ({low}-{high})",
-            }
-        return None
+    def _user_thresholds(self, user_id: str) -> Dict[str, float]:
+        """
+        Fetch thresholds from catalog for the user via GET /users/{user_id}:
+        hr_low/hr_high, temp_low/temp_high, hum_low/hum_high.
+        Returns empty dict if not found or missing fields.
+        """
+        try:
+            return self.catalog.user_thresholds(user_id)
+        except Exception as e:
+            print(f"[alarm] WARN: cannot load thresholds from catalog (user={user_id}): {e}")
+            return {}
 
-    # ---------- Publicación ----------
+    # ---------- Publishing ----------
     def _publish_alert_env(self, user: str, room: str, src_topic: str, payload: Dict[str, Any]):
         msg = {
             "service": self.S.service_id,
@@ -63,7 +72,8 @@ class AlarmControl:
             **payload,
             "ts": int(time.time())
         }
-        topic = f"{self.S.pub_alert_env}".replace("{User1}", user).replace("{Room1}", room)
+        print(f"[alarm] PUBLISH ENV -> {msg}")
+        topic = self._fmt_topic(self.S.pub_alert_env, user, room)
         self.mqtt.pub(topic, json.dumps(msg), qos=1, retain=False)
         print(f"[alarm] ALERT ENV -> {topic}: {payload}")
 
@@ -75,20 +85,24 @@ class AlarmControl:
             **payload,
             "ts": int(time.time())
         }
-        topic = f"{self.S.pub_alert_hr}".replace("{User1}", user).replace("{Room1}", room)
+        topic = self._fmt_topic(self.S.pub_alert_hr, user, room)
         self.mqtt.pub(topic, json.dumps(msg), qos=1, retain=False)
         print(f"[alarm] ALERT HR  -> {topic}: {payload}")
 
 
-        # ---------- Callback MQTT ----------
+        # ---------- MQTT Callback ----------
     def _on_msg(self, topic: str, payload: str):
-        t = topic.lstrip("/")           # tolera "/SC" o "SC"
+        t = topic.lstrip("/")           # tolerates "/SC" or "SC"
         parts = t.split("/")
         if len(parts) < 4 or parts[0] != "SC":
             return
         user, room, leaf = parts[1], parts[2], parts[3]  # leaf: hr | dht
 
-        # Parseo SenML robusto
+        # Per-user thresholds from catalog
+        thr = self._user_thresholds(user)
+        print(f"[alarm] thresholds: {thr} for user {user}")
+
+        # Robust SenML parsing
         try:
             measures = parse_senml(payload)
         except Exception as e:
@@ -106,12 +120,16 @@ class AlarmControl:
                     pass
 
         if leaf == "hr":
-            # ----- HR en tópico dedicado -----
+            # ----- HR branch -----
             v = vals.get("bpm")
             if v is None:
                 return
 
-            low, high = self.S.thresholds["bpm"]
+            low = thr.get("hr_low")
+            high = thr.get("hr_high")
+            if low is None or high is None:
+                print(f"[alarm] missing hr thresholds for user={user}")
+                return
             in_range = (low <= v <= high)
 
             self._publish_alert_hr(user, room, t, {
@@ -129,16 +147,27 @@ class AlarmControl:
 
 
         if leaf == "dht":
-            # ----- TEMP+HUM: publicar SIEMPRE un único mensaje con ambas -----
+            # ----- TEMP+HUM: always publish a single message with both -----
             temp = vals.get("temp")
             hum  = vals.get("hum")
 
-            # Si no llegó ninguno, no publicamos
+            # If neither arrived, skip
             if temp is None and hum is None:
                 return
 
             def pack(var: str, val):
-                low, high = self.S.thresholds[var]
+                key_low = f"{var}_low"
+                key_high = f"{var}_high"
+                low = thr.get(key_low)
+                high = thr.get(key_high)
+                if low is None or high is None:
+                    return {
+                        "variable": var,
+                        "value": val,
+                        "bounds": None,
+                        "status": "NODATA",
+                        "message": "thresholds missing"
+                    }
                 if val is None:
                     return {
                         "variable": var,
@@ -169,7 +198,7 @@ class AlarmControl:
 
 
 
-    # ---------- Ciclo ----------
+    # ---------- Run loop ----------
     def run(self):
         for t in self.S.subscriptions:
             self.mqtt.sub(t, self._on_msg)
