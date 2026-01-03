@@ -2,7 +2,6 @@
 #include <PubSubClient.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <DHTesp.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
 
@@ -19,7 +18,7 @@
 #define MQTT_RECONNECT_DELAY_MS 2000
 
 // ---- Catalog ----
-#define DEVICE_ID               "ESP2"
+#define DEVICE_ID               "ESP3"
 #define CATALOG_BASE_URL        "https://moody-tables-sits-brian.trycloudflare.com" // Update with your tunnel URL
 #define CATALOG_WRITE_TOKEN     ""
 
@@ -29,11 +28,12 @@
 #define USE_MQTT                1
 
 // ---- Hardware Pins ----
-#define PIN_DHT                 15
-#define PIN_SERVO               18
+#define PIN_LED                 4
+#define PIN_SERVO               15
+#define PIN_POT                 34  // Photoresistor/Potentiometer
 
 // ---- Timing ----
-#define TELEMETRY_INTERVAL_MS   2000
+#define TELEMETRY_INTERVAL_MS   1000
 #define WIFI_CONNECT_TIMEOUT_MS 10000
 #define HTTP_TIMEOUT_MS         10000
 
@@ -43,28 +43,27 @@
 
 WiFiClient   wifiClient;
 PubSubClient mqttClient(wifiClient);
-DHTesp       dht;
-Servo        fan;
+Servo        curtainServo;
 
 // Identity
 String userId = "";
 String roomId = "";
 
 // Dynamic MQTT Topics
-String topicUp;
-String topicServo;
-String topicAlertDhtExact;
-String topicAlertDhtWildcard;
-String topicDown;
+String topicLightPub;
+String topicServoCurtain;
+String topicLed;
 String topicSampling;
+String topicDown;
 
 // State
-bool servoOn = false;
+int  servoAngle = 0;       // 0=closed, 90=open
+bool ledState   = false;
 bool samplingEnabled = false; 
 unsigned long lastTelemetryMs = 0;
 
 // ============================================================================
-// NETWORK HELPERS
+// NETWORK HELPERS (Identical to Sensors)
 // ============================================================================
 
 bool httpGet(const String& url, String& responseBody) {
@@ -202,13 +201,14 @@ bool updateDeviceInCatalog() {
   svc["serviceType"] = "MQTT";
 
   JsonArray pubTopics = svc.createNestedArray("topic_pub");
-  pubTopics.add(topicUp);
-  pubTopics.add(topicServo);
+  pubTopics.add(topicServoCurtain);
+  pubTopics.add(topicLightPub);
+  pubTopics.add(topicLed);
   pubTopics.add(topicDown);
 
   JsonArray subTopics = svc.createNestedArray("topic_sub");
-  subTopics.add(topicAlertDhtExact);
-  subTopics.add(topicAlertDhtWildcard);
+  subTopics.add(topicServoCurtain);
+  subTopics.add(topicLed);
   subTopics.add(topicSampling);
 
   doc["timestamp"] = "device-local-ts"; 
@@ -222,16 +222,15 @@ bool updateDeviceInCatalog() {
 }
 
 void constructTopics() {
-  topicUp               = "SC/" + userId + "/" + roomId + "/dht";
-  topicServo            = "SC/" + userId + "/" + roomId + "/ServoDHT";
-  topicAlertDhtExact    = "SC/alerts/" + userId + "/" + roomId + "/dht";
-  topicAlertDhtWildcard = "SC/alerts/+/+/dht";
-  topicDown             = "SC/" + userId + "/" + roomId + "/down";
-  topicSampling         = "SC/" + userId + "/" + roomId + "/sampling";
+  topicServoCurtain = "SC/" + userId + "/" + roomId + "/servoCurtain";
+  topicLightPub     = "SC/" + userId + "/" + roomId + "/Light";
+  topicLed          = "SC/" + userId + "/" + roomId + "/LedL";
+  topicSampling     = "SC/" + userId + "/" + roomId + "/sampling";
+  topicDown         = "SC/" + userId + "/" + roomId + "/down";
 }
 
 // ============================================================================
-// WIFI & MQTT
+// WIFI & MQTT (Identical to Sensors)
 // ============================================================================
 
 void connectWiFi() {
@@ -273,12 +272,12 @@ void connectMQTT() {
     if (mqttClient.connect(clientId.c_str())) {
       Serial.println("[mqtt] Connected!");
       
-      mqttClient.subscribe(topicAlertDhtExact.c_str(), 1);
-      mqttClient.subscribe(topicAlertDhtWildcard.c_str(), 1);
+      mqttClient.subscribe(topicServoCurtain.c_str(), 1);
+      mqttClient.subscribe(topicLed.c_str(), 1);
       mqttClient.subscribe(topicSampling.c_str(), 1);
       
-      Serial.printf("[mqtt] Subscribed: %s\n", topicAlertDhtExact.c_str());
-      Serial.printf("[mqtt] Subscribed: %s\n", topicAlertDhtWildcard.c_str());
+      Serial.printf("[mqtt] Subscribed: %s\n", topicServoCurtain.c_str());
+      Serial.printf("[mqtt] Subscribed: %s\n", topicLed.c_str());
       Serial.printf("[mqtt] Subscribed: %s\n", topicSampling.c_str());
     } else {
       Serial.printf("[mqtt] Failed, rc=%d. Retry in %dms\n", mqttClient.state(), MQTT_RECONNECT_DELAY_MS);
@@ -291,70 +290,100 @@ void connectMQTT() {
 // APPLICATION LOGIC
 // ============================================================================
 
-void publishActuatorState() {
+void publishLedState() {
   if (!USE_MQTT) return;
-  String payload = "[{\"bn\":\"ServoState\",\"bt\":0,\"e\":[{\"n\":\"servoFan\",\"u\":\"bool\",\"vb\":";
-  payload += (servoOn ? "true" : "false");
+  String payload = "[{\"bn\":\"stateLed\",\"bt\":0,\"e\":[{\"n\":\"LedL\",\"u\":\"bool\",\"vb\":";
+  payload += (ledState ? "true" : "false");
   payload += "}]}]";
-  
-  mqttClient.publish(topicServo.c_str(), payload.c_str());
-  Serial.println("[mqtt] PUB Servo: " + payload);
+  mqttClient.publish(topicLed.c_str(), payload.c_str());
+  Serial.println("[mqtt] PUB LED: " + payload);
+}
+
+void publishServoState() {
+  if (!USE_MQTT) return;
+  bool isOpen = (servoAngle == 90);
+  String payload = "[{\"bn\":\"ServoState\",\"bt\":0,\"e\":[{\"n\":\"servoCurtain\",\"u\":\"bool\",\"vb\":";
+  payload += (isOpen ? "true" : "false");
+  payload += "}]}]";
+  mqttClient.publish(topicServoCurtain.c_str(), payload.c_str());
+  Serial.println("[mqtt] PUB Curtain: " + payload);
+}
+
+void publishLightValue(int rawVal) {
+  if (!USE_MQTT) return;
+  char payload[128];
+  snprintf(payload, sizeof(payload), 
+    "[{\"bn\":\"lightValue\",\"bt\":0,\"e\":[{\"n\":\"raw\",\"u\":\"lm\",\"v\":%d}]}]", rawVal);
+    
+  mqttClient.publish(topicLightPub.c_str(), payload);
+  Serial.println("[mqtt] PUB Light: " + String(payload));
 }
 
 void publishDeviceStatus(const char* statusText) {
   if (!USE_MQTT) return;
   char buf[256];
   snprintf(buf, sizeof(buf),
-           "{\"device\":\"%s\",\"type\":\"dht\",\"status\":\"%s\",\"servoFan\":%s,\"sampling\":%s}",
+           "{\"device\":\"%s\",\"type\":\"actuator\",\"status\":\"%s\",\"servoCurtain\":%s,\"led\":%s,\"sampling\":%s}",
            DEVICE_ID,
            statusText, 
-           servoOn ? "true" : "false", 
+           (servoAngle == 90) ? "true" : "false",
+           ledState ? "true" : "false", 
            samplingEnabled ? "true" : "false");
            
   mqttClient.publish(topicDown.c_str(), buf);
   Serial.printf("[mqtt] PUB Status: %s\n", buf);
 }
 
-bool isAlertTopic(const char* topic) {
-  if (!topic) return false;
-  if (strncmp(topic, "SC/alerts/", 10) != 0) return false;
-  size_t len = strlen(topic);
-  if (len < 4) return false;
-  return (strcmp(topic + (len - 4), "/dht") == 0);
-}
+void handleLedCommand(const char* payload) {
+  StaticJsonDocument<512> doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  bool newState = ledState;
+  bool commandFound = false;
 
-bool isAlertPayload(const char* json) {
-  StaticJsonDocument<2048> doc;
-  DeserializationError err = deserializeJson(doc, json);
-  
-  if (!err) {
-    if (doc.containsKey("events") && doc["events"].is<JsonArray>()) {
-      JsonArray events = doc["events"].as<JsonArray>();
+  if (!err && doc.is<JsonArray>()) {
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject rec : arr) {
+      JsonArray events = rec["e"];
       for (JsonObject e : events) {
-        const char* status = e["status"] | "";
-        if (strcmp(status, "ALERT") == 0) return true;
+        const char* n = e["n"] | "";
+        if (strcmp(n, "LedL") == 0) {
+          if (e.containsKey("vb")) { newState = e["vb"]; commandFound = true; }
+          else if (e.containsKey("v")) { newState = (e["v"] != 0); commandFound = true; }
+        }
       }
     }
-    const char* status = doc["status"] | "";
-    if (strcmp(status, "ALERT") == 0) return true;
   }
-  return (strstr(json, "\"status\":\"ALERT\"") != nullptr || strstr(json, "\"status\": \"ALERT\"") != nullptr);
+
+  if (!commandFound) {
+    String s = String(payload);
+    s.trim();
+    s.toUpperCase();
+    if (s == "ON" || s == "1" || s == "TRUE") { newState = true; commandFound = true; }
+    else if (s == "OFF" || s == "0" || s == "FALSE") { newState = false; commandFound = true; }
+  }
+
+  if (commandFound && newState != ledState) {
+    ledState = newState;
+    digitalWrite(PIN_LED, ledState ? HIGH : LOW);
+    Serial.printf("[actuator] LED -> %s\n", ledState ? "ON" : "OFF");
+    publishLedState();
+  }
 }
 
-void handleAlertMessage(const char* payload) {
-  if (!samplingEnabled) return; 
+void handleServoCommand(const char* payload) {
+  if (payload[0] == '[') return;
 
-  bool alertActive = isAlertPayload(payload);
-  Serial.printf("[alert] Status: %s (Current servo: %s)\n", alertActive ? "ALERT" : "OK", servoOn ? "ON" : "OFF");
-
-  if (alertActive != servoOn) {
-    servoOn = alertActive;
-    fan.attach(PIN_SERVO, 500, 2400);
-    fan.write(servoOn ? 180 : 0);
-    
-    publishActuatorState();
-    publishDeviceStatus(servoOn ? "ALERT" : "OK");
-    Serial.printf("[actuator] Fan -> %s\n", servoOn ? "ON" : "OFF");
+  int deg = String(payload).toInt();
+  if (deg != 0 && deg != 90) {
+    Serial.println("[actuator] Servo command ignored: only 0 or 90 allowed");
+    return;
+  }
+  
+  if (deg != servoAngle) {
+    servoAngle = deg;
+    curtainServo.write(servoAngle);
+    Serial.printf("[actuator] Curtain -> %d\n", servoAngle);
+    publishServoState();
   }
 }
 
@@ -367,11 +396,8 @@ void handleSamplingMessage(const char* payload) {
   if (enable != samplingEnabled) {
     samplingEnabled = enable;
     
-    if (!samplingEnabled && servoOn) {
-      servoOn = false;
-      fan.attach(PIN_SERVO, 500, 2400);
-      fan.write(0);
-      publishActuatorState();
+    if (!samplingEnabled && servoOn) { // Note: servoOn here is irrelevant for Light, but kept for structure parity? No, logic differs.
+       // Logic specific to Light actuator
     }
     
     publishDeviceStatus(samplingEnabled ? "MONITORING_ON" : "MONITORING_OFF");
@@ -389,9 +415,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
   Serial.printf("[mqtt] RX %s (%d bytes)\n", topic, len);
 
-  if (isAlertTopic(topic)) {
-    handleAlertMessage(msgBuf);
-  } else if (topicSampling == topic) { 
+  if (topicLed == topic) { // Direct string comparison works if topicLed is String object used consistently
+    handleLedCommand(msgBuf);
+  } else if (topicServoCurtain == topic) {
+    handleServoCommand(msgBuf);
+  } else if (topicSampling == topic) {
     handleSamplingMessage(msgBuf);
   }
 }
@@ -402,13 +430,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n\n--- IoT Sensor Device Booting ---");
+  Serial.println("\n\n--- IoT Actuator Device Booting ---");
 
   // Init Hardware
-  dht.setup(PIN_DHT, DHTesp::DHT22);
-  fan.attach(PIN_SERVO, 500, 2400);
-  fan.write(0);
-  servoOn = false;
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);
+  
+  curtainServo.attach(PIN_SERVO, 500, 2400);
+  curtainServo.write(servoAngle);
+
+  analogReadResolution(12);
 
   mqttClient.setCallback(mqttCallback);
 
@@ -433,7 +464,8 @@ void setup() {
 
   if (USE_MQTT) {
     connectMQTT();
-    publishActuatorState(); 
+    publishLedState();
+    publishServoState();
   }
 }
 
@@ -453,19 +485,7 @@ void loop() {
   unsigned long now = millis();
   if (now - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryMs = now;
-
-    TempAndHumidity th = dht.getTempAndHumidity();
-    if (!isnan(th.temperature) && !isnan(th.humidity)) {
-      String baseName = userId + "/" + roomId + "/";
-      String senml = "[{\"bn\":\"" + baseName + "\",\"bt\":0,\"e\":["
-                     "{\"n\":\"temp\",\"u\":\"Cel\",\"v\":" + String(th.temperature, 1) + "},"
-                     "{\"n\":\"hum\",\"u\":\"%RH\",\"v\":"   + String(th.humidity, 1)    + "}"
-                     "]}]";
-      
-      if (USE_MQTT) {
-        mqttClient.publish(topicUp.c_str(), senml.c_str());
-      }
-      Serial.println("[telemetry] PUB: " + senml);
-    }
+    int raw = analogRead(PIN_POT);
+    publishLightValue(raw);
   }
 }

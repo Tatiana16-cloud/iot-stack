@@ -5,7 +5,6 @@
     "Tatiana Camila Cordoba Acosta"
   ],
   "project_name": "sleepmonitoring",
-  "lastUpdate": "2025-10-09 10:00:00",
   "broker": {
     "IP": "test.mosquitto.org",
     "port": 1883
@@ -96,8 +95,7 @@
             "SC/{User1}/{Room1}/buzzer"
           ]
         }
-      ],
-      "lastUpdate": "2025-10-02 21:45:00"
+      ]
     },
     {
       "deviceID": "ESP2",
@@ -114,13 +112,19 @@
       "servicesDetails": [
         {
           "serviceType": "MQTT",
-          "topic": [
-            "SC/{User1}/{Room1}/dht",
-            "SC/{User1}/{Room1}/ServoDHT"
+          "topic_pub": [
+            "SC/{User2}/{Room1}/dht",
+            "SC/{User2}/{Room1}/ServoDHT",
+            "SC/{User2}/{Room1}/down"
+          ],
+          "topic_sub": [
+            "SC/alerts/{User2}/{Room1}/dht",
+            "SC/alerts/+/+/dht",
+            "SC/{User2}/{Room1}/sampling"
           ]
         }
       ],
-      "lastUpdate": "2025-10-02 21:45:00"
+      "timestamp": "2026-01-03 20:53:14"
     },
     {
       "deviceID": "ESP3",
@@ -137,20 +141,26 @@
       "servicesDetails": [
         {
           "serviceType": "MQTT",
-          "topic": [
-            "SC/{User1}/{Room1}/servoCurtain",
-            "SC/{User1}/{Room1}/Light",
-            "SC/{User1}/{Room1}/LedL"
+          "topic_pub": [
+            "SC/{User2}/{Room1}/servoCurtain",
+            "SC/{User2}/{Room1}/Light",
+            "SC/{User2}/{Room1}/LedL",
+            "SC/{User2}/{Room1}/down"
+          ],
+          "topic_sub": [
+            "SC/{User2}/{Room1}/servoCurtain",
+            "SC/{User2}/{Room1}/LedL",
+            "SC/{User2}/{Room1}/sampling"
           ]
         }
       ],
-      "lastUpdate": "2025-10-02 21:45:00"
+      "timestamp": "2026-01-03 20:51:53"
     }
   ],
   "roomsList": [
     {
       "roomID": "{Room1}",
-      "userID": "{User1}",
+      "userID": "{User2}",
       "connected_devices": [
         {
           "deviceID": "ESP1"
@@ -161,15 +171,14 @@
         {
           "deviceID": "ESP3"
         }
-      ],
-      "lastUpdate": "2025-10-02 21:45:00"
+      ]
     }
   ],
   "usersList": [
     {
       "userID": "{User1}",
       "role": "User",
-      "roomID": "{Room1}",
+      "roomID": "{Room2}",
       "user_information": {
         "userName": "User1",
         "phone": "+573001112233",
@@ -201,7 +210,6 @@
         "password_salt": "a1f3c5d7e9b2c4a6",
         "password_hash": "f3fa8f648777b8a1b4126523cd64e6dfde51b3831022811cdd3af39b5d3b47e7"
       },
-      "lastUpdate": "2025-10-09 10:00:00",
       "timestamp": "2025-12-28 19:05:34"
     },
     {
@@ -211,8 +219,8 @@
       "user_information": {
         "userName": "User2",
         "phone": "+573158280698",
-        "timeawake": "17:36",
-        "timesleep": "17:33"
+        "timeawake": "21:59",
+        "timesleep": "21:55"
       },
       "threshold_parameters": {
         "hr_low": 45,
@@ -239,8 +247,8 @@
         "password_salt": "c7d4e1a9b8f2d3c1",
         "password_hash": "f8468e3d859f83b7c84321e4517cf8ad94a7f34ae66630c399bef8fcf32b1051"
       },
-      "lastUpdate": "2025-12-27 10:00:00",
-      "timestamp": "2026-01-03 16:32:43"
+      "timestamp": "2026-01-03 20:54:28"
     }
-  ]
+  ],
+  "lastUpdate": "2026-01-03 20:51:53"
 }
