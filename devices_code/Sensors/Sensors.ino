@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h> // Added for HTTPS support
 #include <DHTesp.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
@@ -48,7 +49,21 @@ const unsigned long PUB_PERIOD_MS = 2000;
 // ---------- Helpers: HTTP + Catalog ----------
 bool httpGet(const String& url, String& out) {
   HTTPClient http;
-  http.begin(url);
+  
+  // Handle HTTPS insecurely for Wokwi/ngrok testing
+  if (url.startsWith("https://")) {
+    WiFiClientSecure *client = new WiFiClientSecure;
+    if(client) {
+      client->setInsecure(); // Skip certificate validation
+      http.begin(*client, url);
+    } else {
+      Serial.println("[httpGet] Failed to create WiFiClientSecure");
+      return false;
+    }
+  } else {
+    http.begin(url);
+  }
+
   int code = http.GET();
   Serial.printf("[httpGet] url=%s code=%d\n", url.c_str(), code);
   if (code > 0) {
@@ -63,7 +78,21 @@ bool httpGet(const String& url, String& out) {
 
 bool httpPatch(const String& url, const String& payload, String& out) {
   HTTPClient http;
-  http.begin(url);
+  
+  // Handle HTTPS insecurely for Wokwi/ngrok testing
+  if (url.startsWith("https://")) {
+    WiFiClientSecure *client = new WiFiClientSecure;
+    if(client) {
+      client->setInsecure(); // Skip certificate validation
+      http.begin(*client, url);
+    } else {
+      Serial.println("[httpPatch] Failed to create WiFiClientSecure");
+      return false;
+    }
+  } else {
+    http.begin(url);
+  }
+
   http.addHeader("Content-Type", "application/json");
   if (strlen(CATALOG_WRITE_TOKEN) > 0) {
     http.addHeader("X-Write-Token", CATALOG_WRITE_TOKEN);
@@ -325,7 +354,7 @@ void setup() {
   client.setCallback(onMessage);
 
   ensureWifi();
-#if USE_CATALOG_LOOKUP
+  #if USE_CATALOG_LOOKUP
   if (resolveRoomAndUser()) {
     buildTopics();
     patchDeviceMetadata();
@@ -335,12 +364,11 @@ void setup() {
     room_id = "{Room1}";
     buildTopics();
   }
-#else
-  // Wokwi/offline mode: skip Catalog HTTP to avoid resets/timeouts
+  #else
   user_id = "{User2}";
   room_id = "{Room1}";
   buildTopics();
-#endif
+  #endif
   if (USE_MQTT) ensureMqtt();
 
   publishServoSenML();  // estado inicial
@@ -376,4 +404,3 @@ void loop() {
     }
   }
 }
-
