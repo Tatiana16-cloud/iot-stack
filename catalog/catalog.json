@@ -18,14 +18,14 @@
         "SC/alerts/#"
       ],
       "MQTT_pub": [],
-      "timestamp": "2025-12-29 04:49:36"
+      "timestamp": "2026-01-03 16:21:21"
     },
     {
       "serviceID": "ReportsGenerator",
       "REST_endpoint": "http://reports_generator:8093",
       "MQTT_sub": [],
       "MQTT_pub": [],
-      "timestamp": "2025-12-29 05:20:31"
+      "timestamp": "2026-01-03 16:38:53"
     },
     {
       "serviceID": "AlarmControl",
@@ -38,7 +38,7 @@
         "SC/alerts/{User}/{Room}/hr",
         "SC/alerts/{User}/{Room}/dht"
       ],
-      "timestamp": "2025-12-29 04:49:37"
+      "timestamp": "2026-01-03 16:21:21"
     },
     {
       "serviceID": "ThingSpeakAdaptor",
@@ -56,7 +56,7 @@
         "SC/+/+/initTimeshift"
       ],
       "MQTT_pub": [],
-      "timestamp": "2025-12-29 04:49:37"
+      "timestamp": "2026-01-03 16:21:21"
     },
     {
       "serviceID": "TimeShift",
@@ -73,7 +73,7 @@
         "SC/{User}/{Room}/servoV",
         "SC/{User}/{Room}/LedL"
       ],
-      "timestamp": "2025-12-29 04:49:36"
+      "timestamp": "2026-01-03 16:21:21"
     }
   ],
   "devicesList": [
@@ -197,6 +197,10 @@
         "dashboard_username": "user1",
         "dashboard_password": null
       },
+      "auth": {
+        "password_salt": "a1f3c5d7e9b2c4a6",
+        "password_hash": "f3fa8f648777b8a1b4126523cd64e6dfde51b3831022811cdd3af39b5d3b47e7"
+      },
       "lastUpdate": "2025-10-09 10:00:00",
       "timestamp": "2025-12-28 19:05:34"
     },
@@ -207,8 +211,8 @@
       "user_information": {
         "userName": "User2",
         "phone": "+573158280698",
-        "timeawake": "06:19",
-        "timesleep": "06:13"
+        "timeawake": "17:36",
+        "timesleep": "17:33"
       },
       "threshold_parameters": {
         "hr_low": 45,
@@ -231,8 +235,12 @@
         "dashboard_username": "user2",
         "dashboard_password": null
       },
+      "auth": {
+        "password_salt": "c7d4e1a9b8f2d3c1",
+        "password_hash": "f8468e3d859f83b7c84321e4517cf8ad94a7f34ae66630c399bef8fcf32b1051"
+      },
       "lastUpdate": "2025-12-27 10:00:00",
-      "timestamp": "2025-12-29 05:12:07"
+      "timestamp": "2026-01-03 16:32:43"
     }
   ]
 }

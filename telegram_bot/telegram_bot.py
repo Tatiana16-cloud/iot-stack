@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+import base64
 import logging
 import re
 import threading
@@ -59,7 +60,7 @@ class BotSettings:
         )
 
 # ---------------- Conversation states ----------------
-ASK_PHONE, MAIN_MENU, CFG_MENU, CFG_TIME_AWAKE, CFG_TIME_SLEEP, CFG_TEMP_LOW, CFG_TEMP_HIGH, CFG_HUM_LOW, CFG_HUM_HIGH = range(9)
+ASK_PHONE, ASK_PASSWORD, MAIN_MENU, CFG_MENU, CFG_TIME_AWAKE, CFG_TIME_SLEEP, CFG_TEMP_LOW, CFG_TEMP_HIGH, CFG_HUM_LOW, CFG_HUM_HIGH = range(10)
 
 MAIN_KB = ReplyKeyboardMarkup(
     [["1. Configuration", "2. Show dashboard"]],
@@ -142,18 +143,72 @@ class TelegramBotService:
             return ASK_PHONE
 
         if not user:
-            await update.message.reply_text("❌ Phone not found in Catalog. Check it and try again.")
+            await update.message.reply_text(
+                "❌ Phone not found in Catalog.\n"
+                "Please send another phone number, or ask an admin to register a new user.",
+            )
             return ASK_PHONE
 
         user_id = user.get("userID")
         uname = user.get("user_information", {}).get("userName", user_id)
 
         chat_id = update.effective_chat.id
-        self.session_by_chat[chat_id] = user_id
-        self.chats_by_user.setdefault(user_id, set()).add(chat_id)
+        # Store pending user for password step
+        self.tmp[chat_id] = {"user_id": user_id, "user_obj": user}
 
         await update.message.reply_text(
-            f"✅ Verified for *{uname}* (`{user_id}`). Choose an option:",
+            f"📞 Found *{uname}* (`{user_id}`). Please enter your password to continue:",
+            parse_mode="Markdown",
+        )
+        return ASK_PASSWORD
+
+    async def ask_password(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        pending = self.tmp.get(chat_id) or {}
+        user_id = pending.get("user_id")
+        if not user_id:
+            await update.message.reply_text("⚠️ No pending user. Please /start again.")
+            return ASK_PHONE
+
+        pwd = (update.message.text or "").strip()
+        if not pwd:
+            await update.message.reply_text("❌ Password cannot be empty. Try again.")
+            return ASK_PASSWORD
+
+        # Best-effort: delete the password message so it is not visible in chat history
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+        except Exception:
+            # If delete fails (e.g., permissions), just continue
+            pass
+
+        # Refresh user from catalog to ensure latest auth
+        try:
+            user = self.cat.get_user(user_id) or pending.get("user_obj") or {}
+        except Exception:
+            log.exception("Catalog error on get_user for password")
+            await update.message.reply_text("⚠️ Catalog error. Please try again.")
+            return ASK_PASSWORD
+
+        auth = user.get("auth") or {}
+        salt = auth.get("password_salt")
+        stored_hash = auth.get("password_hash")
+        if not salt or not stored_hash:
+            await update.message.reply_text("⚠️ No password configured for this user. Contact admin.")
+            return ASK_PASSWORD
+
+        import hashlib
+        entered_hash = hashlib.sha256((salt + pwd).encode("utf-8")).hexdigest()
+        if entered_hash != stored_hash:
+            await update.message.reply_text("❌ Incorrect password. Try again.")
+            return ASK_PASSWORD
+
+        # Success: open session
+        self.session_by_chat[chat_id] = user_id
+        self.chats_by_user.setdefault(user_id, set()).add(chat_id)
+        uname = user.get("user_information", {}).get("userName", user_id)
+        await update.message.reply_text(
+            f"✅ Logged in as *{uname}* (`{user_id}`). Choose an option:",
             parse_mode="Markdown",
             reply_markup=MAIN_KB,
         )
@@ -568,6 +623,7 @@ def build_app(bot: TelegramBotService):
         entry_points=[CommandHandler("start", bot.start)],
         states={
             ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.ask_phone)],
+            ASK_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.ask_password)],
             MAIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.main_menu)],
             CFG_MENU:  [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.cfg_menu)],
             CFG_TIME_AWAKE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.set_time_awake)],

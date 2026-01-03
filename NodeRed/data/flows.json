@@ -188,7 +188,7 @@
         "order": 3,
         "width": 0,
         "height": 0,
-        "format": "<div layout=\"row\" layout-align=\"start center\" style=\"gap:6px;\">\n  <md-input-container flex>\n    <label>UserID</label>\n    <input ng-model=\"userID\" type=\"{{visible ? 'text' : 'password'}}\" placeholder=\"User1\">\n  </md-input-container>\n  <md-button class=\"md-icon-button\" ng-click=\"visible = !visible\" aria-label=\"Show/Hide\">\n    <span ng-if=\"!visible\">👁️</span>\n    <span ng-if=\"visible\">🙈</span>\n  </md-button>\n</div>\n<script>\n(function(scope){\n  scope.userID = \"\";\n  scope.visible = false;\n  scope.$watch('userID', function(val){\n    scope.send({payload: val, topic: 'userID'});\n  });\n  scope.$watch('msg', function(msg){\n    if(msg && msg.topic === 'clear'){\n      scope.userID = \"\";\n    }\n  });\n})(scope);\n</script>",
+        "format": "<div layout=\"row\" layout-align=\"start center\" style=\"gap:6px;\">\n  <md-input-container flex>\n    <label>UserID</label>\n    <input ng-model=\"userID\" type=\"{{visible ? 'text' : 'password'}}\" placeholder=\"User1\">\n  </md-input-container>\n  <md-button class=\"md-icon-button\" ng-click=\"visible = !visible\" aria-label=\"Show/Hide\">\n    <span ng-if=\"!visible\">\ud83d\udc41\ufe0f</span>\n    <span ng-if=\"visible\">\ud83d\ude48</span>\n  </md-button>\n</div>\n<script>\n(function(scope){\n  scope.userID = \"\";\n  scope.visible = false;\n  scope.$watch('userID', function(val){\n    scope.send({payload: val, topic: 'userID'});\n  });\n  scope.$watch('msg', function(msg){\n    if(msg && msg.topic === 'clear'){\n      scope.userID = \"\";\n    }\n  });\n})(scope);\n</script>",
         "storeOutMessages": true,
         "fwdInMessages": true,
         "templateScope": "local",
@@ -234,12 +234,30 @@
         "order": 4,
         "width": 0,
         "height": 0,
-        "format": "<div layout=\"row\" layout-align=\"start center\" style=\"gap:6px;\">\n  <md-input-container flex>\n    <label>Phone</label>\n    <input ng-model=\"phone\" type=\"{{visiblePhone ? 'text' : 'password'}}\" placeholder=\"+573001112233\">\n  </md-input-container>\n  <md-button class=\"md-icon-button\" ng-click=\"visiblePhone = !visiblePhone\" aria-label=\"Show/Hide\">\n    <span ng-if=\"!visiblePhone\">👁️</span>\n    <span ng-if=\"visiblePhone\">🙈</span>\n  </md-button>\n</div>\n<script>\n(function(scope){\n  scope.phone = \"\";\n  scope.visiblePhone = false;\n  scope.$watch('phone', function(val){\n    scope.send({payload: val, topic: 'phone'});\n  });\n  scope.$watch('msg', function(msg){\n    if(msg && msg.topic === 'clear'){\n      scope.phone = \"\";\n    }\n  });\n})(scope);\n</script>",
+        "format": "<div layout=\"row\" layout-align=\"start center\" style=\"gap:6px;\">\n  <md-input-container flex>\n    <label>Phone</label>\n    <input ng-model=\"phone\" type=\"{{visiblePhone ? 'text' : 'password'}}\" placeholder=\"+573001112233\">\n  </md-input-container>\n  <md-button class=\"md-icon-button\" ng-click=\"visiblePhone = !visiblePhone\" aria-label=\"Show/Hide\">\n    <span ng-if=\"!visiblePhone\">\ud83d\udc41\ufe0f</span>\n    <span ng-if=\"visiblePhone\">\ud83d\ude48</span>\n  </md-button>\n</div>\n<script>\n(function(scope){\n  scope.phone = \"\";\n  scope.visiblePhone = false;\n  scope.$watch('phone', function(val){\n    scope.send({payload: val, topic: 'phone'});\n  });\n  scope.$watch('msg', function(msg){\n    if(msg && msg.topic === 'clear'){\n      scope.phone = \"\";\n    }\n  });\n})(scope);\n</script>",
         "x": 220,
         "y": 215,
         "wires": [
             [
                 "store-phone"
+            ]
+        ]
+    },
+    {
+        "id": "input-password",
+        "type": "ui_template",
+        "z": "tab-flow",
+        "group": "ui-group-login",
+        "name": "Password field",
+        "order": 5,
+        "width": 0,
+        "height": 0,
+        "format": "<div layout=\"row\" layout-align=\"start center\" style=\"gap:6px;\">\n  <md-input-container flex>\n    <label>Password</label>\n    <input ng-model=\"password\" type=\"password\" placeholder=\"******\">\n  </md-input-container>\n</div>\n<script>\n(function(scope){\n  scope.password = \"\";\n  scope.$watch('password', function(val){\n    scope.send({payload: val, topic: 'password'});\n  });\n  scope.$watch('msg', function(msg){\n    if(msg && msg.topic === 'clear'){\n      scope.password = \"\";\n    }\n  });\n})(scope);\n</script>",
+        "x": 220,
+        "y": 260,
+        "wires": [
+            [
+                "store-password"
             ]
         ]
     },
@@ -269,12 +287,37 @@
         ]
     },
     {
+        "id": "store-password",
+        "type": "change",
+        "z": "tab-flow",
+        "name": "save password",
+        "rules": [
+            {
+                "t": "set",
+                "p": "login_password",
+                "pt": "flow",
+                "to": "payload",
+                "tot": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 480,
+        "y": 260,
+        "wires": [
+            []
+        ]
+    },
+    {
         "id": "btn-login",
         "type": "ui_button",
         "z": "tab-flow",
         "name": "",
         "group": "ui-group-login",
-        "order": 5,
+        "order": 6,
         "width": 0,
         "height": 0,
         "passthru": false,
@@ -300,7 +343,7 @@
         "type": "function",
         "z": "tab-flow",
         "name": "Prepare request",
-        "func": "const userID = flow.get('login_userID') || \"\";\nconst phone = flow.get('login_phone') || \"\";\n\nmsg.login = {\n    userID: userID.trim(),\n    phone: phone.trim()\n};\n\nmsg.method = \"GET\";\nmsg.url = \"http://catalog:9080/catalog\";\nreturn msg;",
+        "func": "const userID = flow.get('login_userID') || \"\";\nconst phone = flow.get('login_phone') || \"\";\nconst pwd = flow.get('login_password') || \"\";\n\nmsg.login = {\n    userID: userID.trim(),\n    phone: phone.trim(),\n    password: pwd.trim()\n};\n\nmsg.method = \"GET\";\nmsg.url = \"http://catalog:9080/catalog\";\nreturn msg;",
         "outputs": 1,
         "noerr": 0,
         "initialize": "",
@@ -340,9 +383,9 @@
         "id": "validate-login",
         "type": "function",
         "z": "tab-flow",
-        "name": "Validate user + phone",
-        "func": "const login = msg.login || {};\nconst catalog = msg.payload || {};\nconst users = catalog.usersList || [];\n\nconst found = users.find(u => {\n    const uid = (u.userID || \"\").trim();\n    const ph = (u.user_information && u.user_information.phone ? u.user_information.phone : \"\").trim();\n    return uid === login.userID && ph === login.phone;\n});\n\nif (!found) {\n    const errMsg = { payload: \"Data does not match\" };\n    const clearInputs = { payload: \"\", topic: \"clear\" };\n    const clearInputs2 = { payload: \"\", topic: \"clear\" };\n    return [errMsg, null, clearInputs, clearInputs2];\n} else {\n    // store real userID from catalog (e.g. \"{User1}\")\n    flow.set('current_user_id', (found.userID || '').trim());\n    const okMsg = { payload: \"Access approved\" };\n    const goDash = { payload: { tab: \"Dashboard\" } };\n    return [okMsg, goDash, null, null];\n}\n",
-        "outputs": 4,
+        "name": "Validate user + phone + password",
+        "func": "// Validates user + phone + password against the catalog\nconst login = msg.login || {};\nconst catalog = msg.payload || {};\nconst users = catalog.usersList || [];\n\nfunction normID(s){\n    return (s||\"\").replace(/[{}]/g,'').trim();\n}\n\nfunction normPhone(s){\n    return (s||\"\").replace(/\\D/g,'');\n}\n\nfunction sha256(s){\n    // Inline implementation fallback\n    function rightRotate(value, amount) { return (value>>>amount) | (value<<(32-amount)); }\n    let mathPow = Math.pow; let maxWord = mathPow(2, 32);\n    let result = '';\n    let words = [];\n    let asciiBitLength = s.length*8;\n    let hash = sha256.h = sha256.h || [];\n    let k = sha256.k = sha256.k || [];\n    let primeCounter = k.length;\n    const isComposite = {};\n    for (let candidate = 2; primeCounter < 64; candidate++) {\n        if (!isComposite[candidate]) {\n            for (let i = 0; i < 313; i += candidate) { isComposite[i] = candidate; }\n            hash[primeCounter] = (mathPow(candidate, .5)*maxWord)|0;\n            k[primeCounter++] = (mathPow(candidate, 1/3)*maxWord)|0;\n        }\n    }\n    s += '\\x80';\n    while (s.length%64 - 56) s += '\\x00';\n    for (let i = 0; i < s.length; i++) {\n        let j = s.charCodeAt(i);\n        if (j>>8) return ''; // only ASCII\n        words[i>>2] |= j << ((3 - i)%4)*8;\n    }\n    words[words.length] = (asciiBitLength/ maxWord)|0;\n    words[words.length] = (asciiBitLength);\n    for (let j = 0; j < words.length;) {\n        let w = words.slice(j, j += 16);\n        let oldHash = hash;\n        hash = hash.slice(0, 8);\n        for (let i = 0; i < 64; i++) {\n            let i2 = i + j;\n            let w15 = w[i - 15], w2 = w[i - 2];\n            let a = hash[0], e = hash[4];\n            let temp1 = hash[7]\n                + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25))\n                + ((e & hash[5]) ^ ((~e) & hash[6]))\n                + k[i]\n                + (w[i] = (i < 16) ? w[i] : (\n                    w[i - 16]\n                    + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15>>>3))\n                    + w[i - 7]\n                    + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2>>>10))\n                ) |0\n                );\n            let temp2 = (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22))\n                + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));\n            hash = [(temp1 + temp2)|0].concat(hash);\n            hash[4] = (hash[4] + temp1)|0;\n        }\n        for (let i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i])|0;\n    }\n    for (let i = 0; i < 8; i++) {\n        for (let j = 3; j + 1; j--) {\n            let b = (hash[i] >> (j * 8)) & 255;\n            result += ((b < 16) ? 0 : '') + b.toString(16);\n        }\n    }\n    return result;\n}\n\nconst login_uid = normID(login.userID);\nconst login_phone = normPhone(login.phone);\nconst login_pwd = login.password || \"\";\n\n// Debug logs\nnode.warn(\"login-input: \" + JSON.stringify({\n  stage: \"login-input\",\n  userID: login_uid,\n  phone: login_phone,\n  password_clear: login_pwd // Unmasked for debugging\n}, null, 2));\n\nconst found = users.find(u => {\n    const uid = normID(u.userID);\n    const ph = normPhone(u.user_information && u.user_information.phone ? u.user_information.phone : \"\");\n    const auth = u.auth || {};\n    const salt = auth.password_salt || \"\";\n    const stored = auth.password_hash || \"\";\n    if (!salt || !stored) return false;\n    \n    const string_to_hash = salt + login_pwd;\n    const entered = sha256(string_to_hash);\n    \n    const match = (uid === login_uid) && (ph === login_phone) && (stored === entered);\n    node.warn(\"login-compare: \" + JSON.stringify({\n      stage: \"login-compare\",\n      catalog_uid: uid,\n      catalog_phone: ph,\n      login_uid,\n      login_phone,\n      salt,\n      string_to_hash, // Show what we are hashing\n      entered_hash: entered,\n      stored_hash: stored,\n      match\n    }, null, 2));\n    return match;\n});\n\nif (!found) {\n    const errMsg = { payload: \"Data does not match\" };\n    const clearInputs = { payload: \"\", topic: \"clear\" };\n    const clearInputs2 = { payload: \"\", topic: \"clear\" };\n    const clearInputs3 = { payload: \"\", topic: \"clear\" };\n    return [errMsg, null, clearInputs, clearInputs2, clearInputs3];\n} else {\n    flow.set('current_user_id', (found.userID || '').trim());\n    const okMsg = { payload: \"Access approved\" };\n    const goDash = { payload: { tab: \"Dashboard\" } };\n    return [okMsg, goDash, null, null, null];\n}\n",
+        "outputs": 5,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
@@ -363,6 +406,9 @@
             ],
             [
                 "input-phone"
+            ],
+            [
+                "input-password"
             ]
         ]
     },

@@ -3,7 +3,7 @@
 Bot for user-facing interactions: verifies identity via phone against the Catalog, lets users configure sleep times and environment thresholds, shows the ThingSpeak dashboard link, and forwards alerts/bedtime/wakeup events coming from MQTT.
 
 ## What it does
-- Identity verification: user shares phone number; the bot checks the Catalog (usersList) and binds the chat to that userID.
+- Identity verification: user shares phone number; the bot checks the Catalog (usersList) and binds the chat to that userID. If the phone exists, it then prompts for password.
 - Configuration:
   - Sleep times: wake-up (`timeawake`) and sleep (`timesleep`) -> PATCH to Catalog `user_information`.
   - Thresholds: temperature/humidity min/max -> PATCH to Catalog `threshold_parameters`.
@@ -12,6 +12,16 @@ Bot for user-facing interactions: verifies identity via phone against the Catalo
   - Alerts (HR/env) from Alarm via MQTT topics `SC/alerts/{user}/{room}/hr|dht`.
   - Sleep events (bedtime/wakeup) from TimeShift via MQTT topics `SC/{user}/{room}/bedtime|wakeup`.
 - Emits initTimeshift: after setting wake/sleep times, publishes `SC/{User}/{Room}/initTimeshift` with `{timeawake, timesleep}`.
+
+## Authentication & password hashing
+- Login flow:
+  1) Ask for phone (international format). If not found, ask to re-enter or register with an admin.
+  2) If found, ask for password. The bot deletes the message (best effort) to avoid showing the password in the chat.
+  3) Hash check: `entered_hash = sha256(password_salt + password)`; compare to `auth.password_hash` stored in the Catalog.
+- Catalog fields required for each user:
+  - `auth.password_salt`
+  - `auth.password_hash` (sha256 of `salt + password`)
+- On success: binds chat to `userID`, enables menus; on failure: prompts again.
 
 ## Settings (settings.json)
 - `catalogURL`: base URL of Catalog (without trailing `/catalog`).
